@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 56" width="240" height="56" fill="none">
+  <!-- Brand Icon -->
+  <g transform="translate(6, 6)">
+    <rect width="44" height="44" rx="10" fill="#5156BE"/>
+    <!-- Dynamic Trade/Exchange Arrows -->
+    <path d="M14 20H30M30 20L25 15M30 20L25 25" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M30 28H14M14 28L19 23M14 28L19 33" stroke="#A5B4FC" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <!-- Brand Name -->
+  <text x="60" y="36" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif" font-size="26" font-weight="800" letter-spacing="-0.5" fill="#1E293B">Trade<tspan fill="#5156BE">Fix</tspan></text>
+</svg>
