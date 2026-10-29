@@ -6,6 +6,8 @@ import { requireOrganizationId, requireOwnedRecord, withOrganization } from "@/l
 import { requirePOSProfileAccess } from "./access";
 import { getPermissionContext, requirePermission, hasPermission } from "@/lib/rbac";
 import { syncInvoiceInventory, rebuildInventoryForItems } from "@/lib/inventory";
+import { normalizeBarcode } from "@/lib/item-master";
+import { resolveBarcodeForPOS, getPOSListingItems } from "@/lib/pos-barcode";
 import {
   createSequencedJournalEntry,
   getCompanySettings,
@@ -901,209 +903,54 @@ export async function closeShift(formData: FormData) {
   return { success: true };
 }
 
-export async function fetchPosItems(params: { posProfileId: string; categoryId?: string | null; query?: string }) {
+export async function fetchPosItems(params: {
+  posProfileId: string;
+  categoryId?: string | null;
+  query?: string;
+  customerId?: string | null;
+}) {
   await requirePermission("pos.access");
   const organizationId = await requireOrganizationId();
   const ctx = await getPermissionContext();
   const userId = ctx.userId;
   if (!userId) throw new Error("Not authenticated");
 
-  const { posProfileId, categoryId, query } = params;
+  await requireOwnedRecord(prisma.pOSProfile as any, params.posProfileId, organizationId);
 
-  const profile = await prisma.pOSProfile.findFirst({
-    where: withOrganization(organizationId, {
-      id: posProfileId,
-      isActive: true,
-    }),
-    include: {
-      posCounter: true,
-      defaultPriceList: true,
-    },
-  });
-  if (!profile) throw new Error("POS profile not found");
+  return await getPOSListingItems(organizationId, params, prisma);
+}
 
-  await requireOwnedRecord(prisma.pOSProfile as any, posProfileId, organizationId);
+export async function lookupPosBarcode(
+  rawBarcode: string,
+  posProfileId: string,
+  customerId?: string
+): Promise<{
+  ok: boolean;
+  error?: string;
+  item?: {
+    id: string;
+    name: string;
+    itemCode: string;
+    unitName: string;
+    conversionFactor: number;
+    unitPrice: number;
+    stockQty: number;
+    trackBatches: boolean;
+    hasExpiry: boolean;
+    isAlternateUnit: boolean;
+    barcode: string;
+  };
+}> {
+  try {
+    await requirePermission("pos.access");
+    const organizationId = await requireOrganizationId();
+    const ctx = await getPermissionContext();
+    if (!ctx.userId) return { ok: false, error: "Not authenticated" };
 
-  const linkedWarehouseName = profile.posCounter?.linkedWarehouseName || null;
-  let priceListId = profile.defaultPriceListId;
-
-  if (!priceListId) {
-    const fallbackPL = await prisma.priceList.findFirst({
-      where: withOrganization(organizationId, {
-        isActive: true,
-        type: "SELLING",
-      }),
-      orderBy: [
-        { isSystemDefault: "desc" },
-        { createdAt: "asc" },
-      ],
-      select: { id: true },
-    });
-    if (fallbackPL) priceListId = fallbackPL.id;
+    return await resolveBarcodeForPOS(organizationId, rawBarcode, posProfileId, customerId, prisma);
+  } catch (err: any) {
+    return { ok: false, error: err?.message || "Failed to lookup barcode." };
   }
-
-  const hideOutOfStock = profile.hideOutOfStockItems;
-
-  let where: any = withOrganization(organizationId, {
-    isActive: true,
-    itemType: "INVENTORY",
-  });
-
-  if (categoryId && categoryId !== "all") {
-    const cat = await prisma.itemCategory.findFirst({
-      where: withOrganization(organizationId, { id: categoryId }),
-    });
-    if (cat) {
-      where.category = cat.name;
-    }
-  }
-
-  if (query && query.trim()) {
-    const q = query.trim();
-    where.OR = [
-      { name: { contains: q, mode: "insensitive" } },
-      { itemCode: { contains: q, mode: "insensitive" } },
-    ];
-  }
-
-  let items = await prisma.item.findMany({
-    where,
-    select: {
-      id: true,
-      name: true,
-      itemCode: true,
-      defaultUnit: true,
-      category: true,
-      trackBatches: true,
-      hasExpiry: true,
-    },
-    orderBy: { name: "asc" },
-  });
-
-  const itemIds = items.map((i) => i.id);
-
-  let linkedStockMap: Record<string, number> = {};
-  let overallStockMap: Record<string, number> = {};
-  const anyBatchesAtAllRaw = await prisma.itemBatch.groupBy({
-    by: ["warehouseName"],
-    where: withOrganization(organizationId, { availableQty: { gt: 0 } }),
-    _count: { _all: true },
-  });
-  const anyBatchesAtAll = anyBatchesAtAllRaw.length > 0;
-
-  const normWh = (value: string | null | undefined) =>
-    value == null ? "" : String(value).trim().toLowerCase();
-
-  const allBatchesForItems = await prisma.itemBatch.findMany({
-    where: withOrganization(organizationId, {
-      availableQty: { gt: 0 },
-      itemId: { in: itemIds },
-    }),
-    select: {
-      itemId: true,
-      warehouseName: true,
-      availableQty: true,
-    },
-  });
-
-  const targetNorm = linkedWarehouseName ? normWh(linkedWarehouseName) : "";
-  for (const b of allBatchesForItems) {
-    const qty = Number(b.availableQty || 0);
-    if (qty <= 0) continue;
-    overallStockMap[b.itemId] = Number(overallStockMap[b.itemId] || 0) + qty;
-    if (linkedWarehouseName && targetNorm && normWh(b.warehouseName) === targetNorm) {
-      linkedStockMap[b.itemId] = Number(linkedStockMap[b.itemId] || 0) + qty;
-    }
-  }
-
-  if (linkedWarehouseName && Object.keys(linkedStockMap).length === 0) {
-    const allStock = await prisma.itemBatch.groupBy({
-      by: ["itemId"],
-      where: withOrganization(organizationId, {
-        availableQty: { gt: 0 },
-        itemId: { in: itemIds },
-      }),
-      _sum: { availableQty: true },
-    });
-    for (const agg of allStock) {
-      overallStockMap[agg.itemId] = Number(overallStockMap[agg.itemId] || 0) + Number(agg._sum.availableQty || 0);
-    }
-  }
-
-  let priceMap: Record<string, number> = {};
-  if (priceListId) {
-    const priceItems = await prisma.priceListItem.findMany({
-      where: withOrganization(organizationId, {
-        priceListId,
-        itemId: { in: itemIds },
-      }),
-      select: { itemId: true, price: true },
-    });
-    for (const p of priceItems) {
-      priceMap[p.itemId] = Number(p.price || 0);
-    }
-  }
-
-  let barcodeMap: Record<string, string> = {};
-  if (query && query.trim()) {
-    const q = query.trim();
-    const convs = await prisma.itemUnitConversion.findMany({
-      where: withOrganization(organizationId, {
-        barcode: { contains: q, mode: "insensitive" },
-      }),
-      select: { itemId: true, barcode: true },
-    });
-    for (const c of convs) {
-      barcodeMap[c.itemId] = c.barcode || "";
-    }
-    const matchedIds = new Set(convs.map((c) => c.itemId));
-    if (matchedIds.size > 0) {
-      const extraItems = await prisma.item.findMany({
-        where: withOrganization(organizationId, {
-          id: { in: Array.from(matchedIds).filter((x) => !itemIds.includes(x)) },
-          isActive: true,
-          itemType: "INVENTORY",
-        }),
-        select: {
-          id: true,
-          name: true,
-          itemCode: true,
-          defaultUnit: true,
-          category: true,
-          trackBatches: true,
-          hasExpiry: true,
-        },
-      });
-      items = [...items, ...extraItems];
-    }
-  }
-
-  const result = items
-    .map((item: any) => {
-      const linkedStock = linkedWarehouseName ? Number(linkedStockMap[item.id] || 0) : 0;
-      const overallStock = Number(overallStockMap[item.id] || 0);
-      const stockQty = linkedStock > 0 ? linkedStock : overallStock;
-      const unitPrice = Number(priceMap[item.id] ?? 0);
-      return {
-        id: item.id,
-        name: item.name,
-        itemCode: item.itemCode || "",
-        unitName: item.defaultUnit,
-        stockQty,
-        unitPrice,
-        trackBatches: Boolean(item.trackBatches),
-        hasExpiry: Boolean(item.hasExpiry),
-        categoryId: item.category || null,
-        barcode: barcodeMap[item.id] || item.itemCode || "",
-      };
-    })
-    .filter((row) => {
-      if (!hideOutOfStock) return true;
-      if (!anyBatchesAtAll) return true;
-      return row.stockQty > 0;
-    });
-
-  return result;
 }
 
 export async function getPosCategories(profileId: string) {
@@ -2164,6 +2011,25 @@ export async function posRefund(payload: {
         for (const line of payload.lines) {
           const qty = Number(line.quantity || 0);
           if (line.itemId && qty > 0) {
+            let factor = 1;
+            const invItem = inv.items.find((it: any) => String(it.itemId || it.description || "") === String(line.itemId || line.description || ""));
+            const unitCandidate = String((line as any).unitName || invItem?.moreDetails || "").trim().toLowerCase();
+
+            if (unitCandidate) {
+              const conv = await tx.itemUnitConversion.findFirst({
+                where: withOrganization(organizationId, {
+                  itemId: line.itemId,
+                  unitName: { equals: unitCandidate, mode: "insensitive" },
+                }),
+              });
+              if (conv && Number(conv.conversionFactor) > 0) {
+                factor = Number(conv.conversionFactor);
+              }
+            }
+
+            const canonicalQty = qty * factor;
+            const unitCost = factor > 0 ? Number(line.unitPrice || 0) / factor : Number(line.unitPrice || 0);
+
             await tx.stockMovement.create({
               data: {
                 organizationId,
@@ -2174,10 +2040,10 @@ export async function posRefund(payload: {
                 movementType: "RETURN",
                 sourceType: "POS_REFUND",
                 sourceNumber: refundNumber,
-                note: `POS Return from ${inv.invoiceNumber}: ${line.description}`,
-                quantity: qty,
-                unitCost: Number(line.unitPrice || 0),
-                totalCost: round2(qty * Number(line.unitPrice || 0)),
+                note: `POS Return from ${inv.invoiceNumber}: ${line.description}${unitCandidate ? ` (${qty} ${unitCandidate})` : ""}`,
+                quantity: canonicalQty,
+                unitCost,
+                totalCost: round2(canonicalQty * unitCost),
                 batchNumber: line.batchNumber || null,
                 expiryDate: line.expiryDate ? new Date(line.expiryDate) : null,
                 warehouseName: line.warehouseName || profile.posCounter?.linkedWarehouseName || null,

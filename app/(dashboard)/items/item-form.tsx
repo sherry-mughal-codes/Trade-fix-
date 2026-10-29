@@ -2,15 +2,16 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
 import { toast } from "react-hot-toast";
-import { createItem, updateItem } from "./actions";
+import { createItem, updateItem, checkBarcodeAvailability } from "./actions";
 
 type ItemUnitRow = {
   id: string;
   unitName: string;
   conversionFactor: number;
+  barcode: string;
 };
 
 type ItemFormData = {
@@ -28,6 +29,7 @@ type ItemFormData = {
     id: string;
     unitName: string;
     conversionFactor: number;
+    barcode?: string | null;
   }>;
 };
 
@@ -37,11 +39,12 @@ interface ItemFormProps {
   categories: Array<{ id: string; name: string }>;
 }
 
-function createUnitRow(unit?: Partial<ItemUnitRow>): ItemUnitRow {
+function createUnitRow(unit?: Partial<ItemUnitRow> | { id?: string; unitName?: string; conversionFactor?: number; barcode?: string | null }): ItemUnitRow {
   return {
     id: unit?.id || Math.random().toString(36).slice(2, 9),
     unitName: unit?.unitName || "",
     conversionFactor: unit?.conversionFactor || 0,
+    barcode: unit?.barcode || "",
   };
 }
 
@@ -49,14 +52,18 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [itemType, setItemType] = useState(initialData?.itemType || "INVENTORY");
+  const [itemCode, setItemCode] = useState(initialData?.itemCode || "");
+  const [itemCodeStatus, setItemCodeStatus] = useState<{ checking?: boolean; message?: string; error?: boolean }>({});
   const [unitRows, setUnitRows] = useState<ItemUnitRow[]>(
     initialData?.unitConversions?.length
       ? initialData.unitConversions.map((unit) => createUnitRow(unit))
       : []
   );
+  const [barcodeStatuses, setBarcodeStatuses] = useState<Record<string, { checking?: boolean; message?: string; error?: boolean }>>({});
 
   const isEditing = Boolean(initialData?.id);
   const isInventoryItem = itemType === "INVENTORY";
+
   const unitOptions = useMemo(() => {
     const map = new Map(units.map((unit) => [unit.name, unit]));
     if (initialData?.defaultUnit && !map.has(initialData.defaultUnit)) {
@@ -76,8 +83,10 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
   const unitsPayload = useMemo(
     () =>
       unitRows.map((unit) => ({
+        id: unit.id,
         unitName: unit.unitName.trim(),
         conversionFactor: Number(unit.conversionFactor || 0),
+        barcode: unit.barcode.trim(),
       })),
     [unitRows]
   );
@@ -88,8 +97,135 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
     );
   };
 
+  // Debounced check for Item Code
+  const itemCodeDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  useEffect(() => {
+    const trimmed = itemCode.trim();
+    if (!trimmed) {
+      setItemCodeStatus({});
+      return;
+    }
+
+    if (itemCodeDebounceRef.current) {
+      clearTimeout(itemCodeDebounceRef.current);
+    }
+
+    setItemCodeStatus({ checking: true });
+    itemCodeDebounceRef.current = setTimeout(async () => {
+      try {
+        const result = await checkBarcodeAvailability(trimmed, initialData?.id);
+        if (!result.available) {
+          setItemCodeStatus({ checking: false, error: true, message: result.message });
+        } else {
+          setItemCodeStatus({ checking: false, error: false, message: "Code available" });
+        }
+      } catch {
+        setItemCodeStatus({ checking: false });
+      }
+    }, 350);
+
+    return () => {
+      if (itemCodeDebounceRef.current) {
+        clearTimeout(itemCodeDebounceRef.current);
+      }
+    };
+  }, [itemCode, initialData?.id]);
+
+  // Debounced check for Alternate Unit Barcodes
+  const unitBarcodeDebounceRefs = useRef<Record<string, NodeJS.Timeout>>({});
+  const validateUnitBarcode = useCallback(
+    (rowId: string, barcode: string) => {
+      const trimmed = barcode.trim();
+      if (!trimmed) {
+        setBarcodeStatuses((prev) => ({
+          ...prev,
+          [rowId]: { error: true, message: "Barcode is mandatory" },
+        }));
+        return;
+      }
+
+      // Check collision with Item Code
+      if (itemCode.trim() && trimmed === itemCode.trim()) {
+        setBarcodeStatuses((prev) => ({
+          ...prev,
+          [rowId]: { error: true, message: "Barcode matches Item Code" },
+        }));
+        return;
+      }
+
+      // Check duplicate within other rows
+      const duplicateInRows = unitRows.find(
+        (row) => row.id !== rowId && row.barcode.trim() === trimmed
+      );
+      if (duplicateInRows) {
+        setBarcodeStatuses((prev) => ({
+          ...prev,
+          [rowId]: { error: true, message: "Duplicate barcode in alternate units" },
+        }));
+        return;
+      }
+
+      if (unitBarcodeDebounceRefs.current[rowId]) {
+        clearTimeout(unitBarcodeDebounceRefs.current[rowId]);
+      }
+
+      setBarcodeStatuses((prev) => ({
+        ...prev,
+        [rowId]: { checking: true },
+      }));
+
+      unitBarcodeDebounceRefs.current[rowId] = setTimeout(async () => {
+        try {
+          const result = await checkBarcodeAvailability(trimmed, initialData?.id);
+          if (!result.available) {
+            setBarcodeStatuses((prev) => ({
+              ...prev,
+              [rowId]: { checking: false, error: true, message: result.message },
+            }));
+          } else {
+            setBarcodeStatuses((prev) => ({
+              ...prev,
+              [rowId]: { checking: false, error: false, message: "Barcode available" },
+            }));
+          }
+        } catch {
+          setBarcodeStatuses((prev) => ({
+            ...prev,
+            [rowId]: { checking: false },
+          }));
+        }
+      }, 350);
+    },
+    [initialData?.id, itemCode, unitRows]
+  );
+
+  useEffect(() => {
+    unitRows.forEach((row) => {
+      if (row.barcode) {
+        validateUnitBarcode(row.id, row.barcode);
+      }
+    });
+  }, [unitRows.length, itemCode]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const handleSubmit = async (formData: FormData) => {
+    // Check if any unit is missing barcode
+    for (const unit of unitRows) {
+      if (!unit.unitName.trim()) {
+        toast.error("Please select a unit name for all alternate units.");
+        return;
+      }
+      if (!unit.barcode.trim()) {
+        toast.error(`Barcode is mandatory for alternate unit "${unit.unitName}".`);
+        return;
+      }
+      if (!(unit.conversionFactor > 0)) {
+        toast.error(`Conversion factor for "${unit.unitName}" must be greater than zero.`);
+        return;
+      }
+    }
+
     setLoading(true);
+    formData.set("itemCode", itemCode.trim());
     formData.set("unitsData", JSON.stringify(unitsPayload));
 
     try {
@@ -97,8 +233,8 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
         ? await updateItem(initialData.id, formData)
         : await createItem(formData);
 
-      if (result?.error) {
-        toast.error(result.error);
+      if (result && "error" in result && result.error) {
+        toast.error(String(result.error));
         return;
       }
 
@@ -143,14 +279,31 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
           <h2 className="text-sm font-semibold text-foreground">Item Profile</h2>
           <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
             <div className="space-y-2">
-              <label htmlFor="itemCode" className="text-sm font-medium text-foreground">Item Code</label>
+              <div className="flex items-center justify-between">
+                <label htmlFor="itemCode" className="text-sm font-medium text-foreground">
+                  Item Code (Default Unit Barcode)
+                </label>
+                {itemCodeStatus.checking ? (
+                  <span className="text-xs text-muted-foreground">Checking...</span>
+                ) : null}
+              </div>
               <input
                 id="itemCode"
                 name="itemCode"
-                defaultValue={initialData?.itemCode || ""}
-                className="w-full rounded-md border border-input bg-background px-3 py-2"
-                placeholder="Optional code"
+                value={itemCode}
+                onChange={(e) => setItemCode(e.target.value)}
+                className={`w-full rounded-md border px-3 py-2 bg-background ${
+                  itemCodeStatus.error ? "border-red-500 focus:ring-red-500" : "border-input"
+                }`}
+                placeholder="Optional code / barcode"
               />
+              {itemCodeStatus.message ? (
+                <p className={`text-xs ${itemCodeStatus.error ? "text-red-500" : "text-emerald-600"}`}>
+                  {itemCodeStatus.message}
+                </p>
+              ) : (
+                <p className="text-xs text-muted-foreground">Acts as the barcode for the default unit.</p>
+              )}
             </div>
 
             <div className="space-y-2">
@@ -280,7 +433,9 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
           <div className="flex items-center justify-between">
             <div>
               <h2 className="text-sm font-semibold text-foreground">Alternate Units</h2>
-              <p className="text-xs text-muted-foreground">Define how extra units convert into the default unit.</p>
+              <p className="text-xs text-muted-foreground">
+                Define how extra units convert into the default unit. Each alternate unit must have a unique barcode.
+              </p>
             </div>
             <button
               type="button"
@@ -298,45 +453,100 @@ export default function ItemForm({ initialData, units, categories }: ItemFormPro
             </div>
           ) : (
             <div className="space-y-3">
-              {unitRows.map((unit) => (
-                <div key={unit.id} className="grid grid-cols-1 gap-3 rounded-md border border-border p-4 md:grid-cols-[1.4fr_1fr_auto]">
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Unit Name</label>
-                    <select
-                      value={unit.unitName}
-                      onChange={(event) => updateUnitRow(unit.id, "unitName", event.target.value)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2"
-                    >
-                      <option value="">Select unit</option>
-                      {unitOptions.map((option) => (
-                        <option key={option.id} value={option.name}>{option.name}</option>
-                      ))}
-                    </select>
+              {unitRows.map((unit) => {
+                const status = barcodeStatuses[unit.id];
+                return (
+                  <div
+                    key={unit.id}
+                    className="grid grid-cols-1 gap-3 rounded-md border border-border p-4 md:grid-cols-[1.2fr_1fr_1.4fr_auto] md:items-start"
+                  >
+                    <div className="space-y-1.5">
+                      <div className="flex h-5 items-center">
+                        <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Unit Name
+                        </label>
+                      </div>
+                      <select
+                        value={unit.unitName}
+                        onChange={(event) => updateUnitRow(unit.id, "unitName", event.target.value)}
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-minia-primary/40"
+                      >
+                        <option value="">Select unit</option>
+                        {unitOptions.map((option) => (
+                          <option key={option.id} value={option.name}>{option.name}</option>
+                        ))}
+                      </select>
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex h-5 items-center">
+                        <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Conversion Factor
+                        </label>
+                      </div>
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.0001"
+                        value={unit.conversionFactor || ""}
+                        onChange={(event) =>
+                          updateUnitRow(unit.id, "conversionFactor", parseFloat(event.target.value) || 0)
+                        }
+                        className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-minia-primary/40"
+                        placeholder="How many base units"
+                      />
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="flex h-5 items-center justify-between">
+                        <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                          Barcode <span className="text-red-500">*</span>
+                        </label>
+                        {status?.checking ? (
+                          <span className="text-xs text-muted-foreground">Checking...</span>
+                        ) : null}
+                      </div>
+                      <input
+                        type="text"
+                        required
+                        value={unit.barcode}
+                        onChange={(event) => {
+                          updateUnitRow(unit.id, "barcode", event.target.value);
+                          validateUnitBarcode(unit.id, event.target.value);
+                        }}
+                        className={`h-10 w-full rounded-md border px-3 text-sm bg-background focus:outline-none focus:ring-2 ${
+                          status?.error ? "border-red-500 focus:ring-red-500/40" : "border-input focus:ring-minia-primary/40"
+                        }`}
+                        placeholder="Mandatory unit barcode"
+                      />
+                      {status?.message ? (
+                        <p className={`text-xs ${status?.error ? "text-red-500" : "text-emerald-600"}`}>
+                          {status.message}
+                        </p>
+                      ) : null}
+                    </div>
+
+                    <div className="space-y-1.5">
+                      <div className="hidden md:flex h-5 items-center" aria-hidden="true" />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setUnitRows((current) => current.filter((row) => row.id !== unit.id));
+                          setBarcodeStatuses((prev) => {
+                            const next = { ...prev };
+                            delete next[unit.id];
+                            return next;
+                          });
+                        }}
+                        className="inline-flex h-10 items-center justify-center gap-2 rounded-md border border-red-200 px-3 text-sm font-medium text-red-600 hover:bg-red-50 transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Remove
+                      </button>
+                    </div>
                   </div>
-                  <div className="space-y-2">
-                    <label className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Conversion Factor</label>
-                    <input
-                      type="number"
-                      min="0"
-                      step="0.0001"
-                      value={unit.conversionFactor}
-                      onChange={(event) => updateUnitRow(unit.id, "conversionFactor", parseFloat(event.target.value) || 0)}
-                      className="w-full rounded-md border border-input bg-background px-3 py-2"
-                      placeholder="How many base units"
-                    />
-                  </div>
-                  <div className="flex items-end">
-                    <button
-                      type="button"
-                      onClick={() => setUnitRows((current) => current.filter((row) => row.id !== unit.id))}
-                      className="inline-flex items-center gap-2 rounded-md border border-red-200 px-3 py-2 text-sm font-medium text-red-600 hover:bg-red-50"
-                    >
-                      <Trash2 className="h-4 w-4" />
-                      Remove
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </section>

@@ -279,11 +279,13 @@ export async function seedOrganizationDemoData(prisma: DbLike, organizationId: s
       for (const seed of DEMO_ITEMS) {
         const item = items.find((entry: any) => entry.name === seed.name);
         if (!item) continue;
+        const defaultUnit = item.defaultUnit || "Unit";
         await tx.priceListItem.upsert({
           where: {
-            priceListId_itemId: {
+            priceListId_itemId_unitName: {
               priceListId: sellingPriceList.id,
               itemId: item.id,
+              unitName: defaultUnit,
             },
           },
           update: { price: seed.sellingPrice },
@@ -291,6 +293,7 @@ export async function seedOrganizationDemoData(prisma: DbLike, organizationId: s
             organizationId,
             priceListId: sellingPriceList.id,
             itemId: item.id,
+            unitName: defaultUnit,
             price: seed.sellingPrice,
           },
         });

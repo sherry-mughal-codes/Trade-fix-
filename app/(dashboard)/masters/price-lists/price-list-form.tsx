@@ -1,8 +1,8 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { ArrowLeft, Loader2, Plus, Trash2 } from "lucide-react";
+import { useCallback, useMemo, useState } from "react";
+import { ArrowLeft, Loader2, Plus, Trash2, AlertCircle } from "lucide-react";
 import { toast } from "react-hot-toast";
 import { useRouter } from "next/navigation";
 import { createPriceList, updatePriceList } from "./actions";
@@ -12,6 +12,10 @@ type ItemOption = {
   name: string;
   category: string | null;
   defaultUnit: string;
+  unitConversions?: Array<{
+    unitName: string;
+    conversionFactor: number;
+  }>;
 };
 
 type CategoryOption = {
@@ -20,7 +24,9 @@ type CategoryOption = {
 };
 
 type PriceListItemRow = {
+  rowKey: string;
   itemId: string;
+  unitName: string;
   price: number;
 };
 
@@ -32,6 +38,7 @@ type PriceListFormData = {
   isSystemDefault?: boolean;
   items?: Array<{
     itemId: string;
+    unitName: string;
     price: number;
   }>;
 };
@@ -46,9 +53,13 @@ function normalizeType(value: string) {
   return value.toUpperCase() === "BUYING" ? "BUYING" : "SELLING";
 }
 
-function createRow(row?: Partial<PriceListItemRow>): PriceListItemRow {
+function createRow(row?: Partial<PriceListItemRow>, defaultItem?: ItemOption): PriceListItemRow {
+  const itemId = row?.itemId || defaultItem?.id || "";
+  const unitName = row?.unitName || defaultItem?.defaultUnit || "";
   return {
-    itemId: row?.itemId || "",
+    rowKey: row?.rowKey || Math.random().toString(36).slice(2, 9),
+    itemId,
+    unitName,
     price: Number(row?.price || 0),
   };
 }
@@ -62,7 +73,9 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>("");
 
   const [rows, setRows] = useState<PriceListItemRow[]>(
-    initialData?.items?.length ? initialData.items.map((row) => createRow(row)) : []
+    initialData?.items?.length
+      ? initialData.items.map((row) => createRow(row))
+      : []
   );
 
   const itemById = useMemo(() => new Map(items.map((item) => [item.id, item])), [items]);
@@ -73,33 +86,84 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
     return categoryById.get(selectedCategoryId)?.name || null;
   }, [categoryById, selectedCategoryId]);
 
+  const getItemUnits = useCallback(
+    (itemId: string): string[] => {
+      const itm = itemById.get(itemId);
+      if (!itm) return [];
+      const list = [itm.defaultUnit];
+      if (itm.unitConversions) {
+        for (const c of itm.unitConversions) {
+          if (c.unitName && !list.includes(c.unitName)) {
+            list.push(c.unitName);
+          }
+        }
+      }
+      return list;
+    },
+    [itemById]
+  );
+
+  const duplicateKeys = useMemo(() => {
+    const seen = new Set<string>();
+    const dupes = new Set<string>();
+    for (const r of rows) {
+      if (!r.itemId || !r.unitName) continue;
+      const key = `${r.itemId}:${r.unitName.toUpperCase()}`;
+      if (seen.has(key)) {
+        dupes.add(key);
+      }
+      seen.add(key);
+    }
+    return dupes;
+  }, [rows]);
+
   const payload = useMemo(
     () =>
       rows
-        .filter((row) => row.itemId)
+        .filter((row) => row.itemId && row.unitName)
         .map((row) => ({
           itemId: row.itemId,
+          unitName: row.unitName,
           price: Number(row.price || 0),
         })),
     [rows]
   );
 
-  const addMissingItems = (candidateIds: string[]) => {
-    const existing = new Set(rows.map((row) => row.itemId));
-    const toAdd = candidateIds.filter((id) => id && !existing.has(id));
+  const addMissingCandidates = (candidates: Array<{ itemId: string; unitName: string }>) => {
+    const existing = new Set(rows.map((row) => `${row.itemId}:${row.unitName.toUpperCase()}`));
+    const toAdd = candidates.filter(
+      (c) => c.itemId && c.unitName && !existing.has(`${c.itemId}:${c.unitName.toUpperCase()}`)
+    );
+
     if (!toAdd.length) {
-      toast.success("No new items to load.");
+      toast.success("No new items or units to load.");
       return;
     }
 
     setRows((current) => [
       ...current,
-      ...toAdd.map((itemId) => createRow({ itemId, price: 0 })),
+      ...toAdd.map((cand) =>
+        createRow({
+          itemId: cand.itemId,
+          unitName: cand.unitName,
+          price: 0,
+        })
+      ),
     ]);
+    toast.success(`Loaded ${toAdd.length} unit price row(s).`);
   };
 
   const loadAllItems = () => {
-    addMissingItems(items.map((item) => item.id));
+    const candidates: Array<{ itemId: string; unitName: string }> = [];
+    for (const item of items) {
+      candidates.push({ itemId: item.id, unitName: item.defaultUnit });
+      if (item.unitConversions) {
+        for (const conv of item.unitConversions) {
+          candidates.push({ itemId: item.id, unitName: conv.unitName });
+        }
+      }
+    }
+    addMissingCandidates(candidates);
   };
 
   const loadCategoryItems = () => {
@@ -107,22 +171,79 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
       toast.error("Select a category first.");
       return;
     }
-    addMissingItems(items.filter((item) => item.category === selectedCategoryName).map((item) => item.id));
+    const filteredItems = items.filter((item) => item.category === selectedCategoryName);
+    const candidates: Array<{ itemId: string; unitName: string }> = [];
+    for (const item of filteredItems) {
+      candidates.push({ itemId: item.id, unitName: item.defaultUnit });
+      if (item.unitConversions) {
+        for (const conv of item.unitConversions) {
+          candidates.push({ itemId: item.id, unitName: conv.unitName });
+        }
+      }
+    }
+    addMissingCandidates(candidates);
   };
 
-  const updateRow = (itemId: string, field: keyof PriceListItemRow, value: string | number) => {
+  const addBlankRow = () => {
+    const defaultItem = items[0];
+    setRows((current) => [
+      ...current,
+      createRow({}, defaultItem),
+    ]);
+  };
+
+  const handleItemChange = (rowKey: string, newItemId: string) => {
+    const item = itemById.get(newItemId);
     setRows((current) =>
-      current.map((row) =>
-        row.itemId === itemId ? { ...row, [field]: field === "price" ? Number(value || 0) : value } : row
-      )
+      current.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+        return {
+          ...row,
+          itemId: newItemId,
+          unitName: item?.defaultUnit || "",
+        };
+      })
     );
   };
 
-  const removeRow = (itemId: string) => {
-    setRows((current) => current.filter((row) => row.itemId !== itemId));
+  const updateRow = (rowKey: string, field: keyof PriceListItemRow, value: string | number) => {
+    setRows((current) =>
+      current.map((row) => {
+        if (row.rowKey !== rowKey) return row;
+        return {
+          ...row,
+          [field]: field === "price" ? Number(value || 0) : value,
+        };
+      })
+    );
+  };
+
+  const removeRow = (rowKey: string) => {
+    setRows((current) => current.filter((row) => row.rowKey !== rowKey));
   };
 
   const handleSubmit = async (formData: FormData) => {
+    if (duplicateKeys.size > 0) {
+      toast.error("Duplicate item and unit combinations exist in the price list. Please fix them before saving.");
+      return;
+    }
+
+    // Verify all rows have valid items and units
+    for (const row of rows) {
+      if (!row.itemId) {
+        toast.error("Please select an item for all rows.");
+        return;
+      }
+      if (!row.unitName) {
+        toast.error("Please select a unit for all rows.");
+        return;
+      }
+      if (!Number.isFinite(row.price) || row.price < 0) {
+        toast.error("Price must be a non-negative number.");
+        return;
+      }
+    }
+
     setLoading(true);
     formData.set("type", type);
     formData.set("isActive", isActive);
@@ -149,17 +270,6 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
     }
   };
 
-  const sortedRows = useMemo(() => {
-    const withMeta = rows
-      .map((row) => ({
-        ...row,
-        meta: itemById.get(row.itemId) || null,
-      }))
-      .filter((row) => row.meta);
-    withMeta.sort((a, b) => (a.meta?.name || "").localeCompare(b.meta?.name || ""));
-    return withMeta;
-  }, [itemById, rows]);
-
   return (
     <form action={handleSubmit} className="space-y-6">
       <div className="flex items-center justify-between gap-4">
@@ -172,14 +282,14 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
               {isEditing ? "Edit Price List" : "New Price List"}
             </h1>
             <p className="text-sm text-muted-foreground">
-              Maintain selling and buying rates, including standard defaults and customer/supplier-specific lists.
+              Maintain selling and buying rates by item and unit, including standard defaults and customer/supplier-specific lists.
             </p>
           </div>
         </div>
 
         <button
           type="submit"
-          disabled={loading}
+          disabled={loading || duplicateKeys.size > 0}
           className="inline-flex items-center justify-center rounded-md bg-minia-primary px-4 py-2 text-sm font-medium text-white hover:brightness-95 disabled:opacity-50"
         >
           {loading ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
@@ -235,17 +345,17 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
         <section className="space-y-4">
           <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-foreground">Items</h2>
+              <h2 className="text-sm font-semibold text-foreground">Items & Unit Prices</h2>
               <p className="text-sm text-muted-foreground">
-                Load items into the list and maintain prices. Any missing item resolves to 0 during invoicing.
+                Maintain rates for each item-unit combination. Alternate units can have distinct prices from the default unit.
               </p>
             </div>
 
-            <div className="flex flex-col gap-2 md:flex-row md:items-center">
+            <div className="flex flex-wrap items-center gap-2">
               <select
                 value={selectedCategoryId}
                 onChange={(event) => setSelectedCategoryId(event.target.value)}
-                className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm md:w-56"
+                className="rounded-md border border-input bg-background px-3 py-2 text-sm md:w-52"
               >
                 <option value="">Select category</option>
                 {categories.map((category) => (
@@ -256,26 +366,42 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
               <button
                 type="button"
                 onClick={loadCategoryItems}
-                className="inline-flex items-center justify-center rounded-md border border-input px-4 py-2 text-sm font-medium hover:bg-accent"
+                className="inline-flex items-center justify-center rounded-md border border-input px-3 py-2 text-sm font-medium hover:bg-accent"
               >
-                <Plus className="mr-2 h-4 w-4" />
+                <Plus className="mr-1.5 h-4 w-4" />
                 Load Category
               </button>
 
               <button
                 type="button"
                 onClick={loadAllItems}
-                className="inline-flex items-center justify-center rounded-md bg-minia-primary/10 px-4 py-2 text-sm font-medium text-minia-primary hover:bg-minia-primary/15"
+                className="inline-flex items-center justify-center rounded-md bg-minia-primary/10 px-3 py-2 text-sm font-medium text-minia-primary hover:bg-minia-primary/15"
               >
-                <Plus className="mr-2 h-4 w-4" />
+                <Plus className="mr-1.5 h-4 w-4" />
                 Load All Items
+              </button>
+
+              <button
+                type="button"
+                onClick={addBlankRow}
+                className="inline-flex items-center justify-center rounded-md border border-input px-3 py-2 text-sm font-medium hover:bg-accent"
+              >
+                <Plus className="mr-1.5 h-4 w-4" />
+                Add Row
               </button>
             </div>
           </div>
 
+          {duplicateKeys.size > 0 ? (
+            <div className="flex items-center gap-2 rounded-md border border-red-200 bg-red-50 p-3 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/20 dark:text-red-400">
+              <AlertCircle className="h-4 w-4 shrink-0" />
+              <span>One or more item-unit combinations are duplicated below. Each unit for an item can only appear once per price list.</span>
+            </div>
+          ) : null}
+
           <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[720px] text-left text-sm">
+              <table className="w-full min-w-[760px] text-left text-sm">
                 <thead className="border-b border-border bg-muted/50">
                   <tr>
                     <th className="px-6 py-4 font-medium text-muted-foreground">Item</th>
@@ -286,42 +412,82 @@ export default function PriceListForm({ initialData, items, categories }: PriceL
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {sortedRows.length === 0 ? (
+                  {rows.length === 0 ? (
                     <tr>
                       <td colSpan={5} className="px-6 py-10 text-center text-muted-foreground">
-                        No items loaded yet. Use Load All Items or Load Category.
+                        No item prices loaded yet. Use Load All Items, Load Category, or Add Row.
                       </td>
                     </tr>
                   ) : (
-                    sortedRows.map((row) => (
-                      <tr key={row.itemId} className="transition-colors hover:bg-accent/40">
-                        <td className="px-6 py-3">
-                          <div className="font-medium text-foreground">{row.meta?.name}</div>
-                        </td>
-                        <td className="px-6 py-3 text-muted-foreground">{row.meta?.category || "-"}</td>
-                        <td className="px-6 py-3 text-muted-foreground">{row.meta?.defaultUnit}</td>
-                        <td className="px-6 py-3 text-right">
-                          <input
-                            type="number"
-                            min="0"
-                            step="0.01"
-                            value={row.price}
-                            onChange={(event) => updateRow(row.itemId, "price", event.target.value)}
-                            className="w-32 rounded-md border border-input bg-background px-3 py-2 text-right"
-                          />
-                        </td>
-                        <td className="px-6 py-3 text-right">
-                          <button
-                            type="button"
-                            onClick={() => removeRow(row.itemId)}
-                            className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:text-red-500"
-                            aria-label="Remove"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
+                    rows.map((row) => {
+                      const item = itemById.get(row.itemId);
+                      const unitOptions = getItemUnits(row.itemId);
+                      const isDupe = duplicateKeys.has(`${row.itemId}:${row.unitName.toUpperCase()}`);
+
+                      return (
+                        <tr
+                          key={row.rowKey}
+                          className={`transition-colors hover:bg-accent/40 ${isDupe ? "bg-red-50/50 dark:bg-red-950/20" : ""}`}
+                        >
+                          <td className="px-6 py-3">
+                            <select
+                              value={row.itemId}
+                              onChange={(e) => handleItemChange(row.rowKey, e.target.value)}
+                              className="w-full min-w-[200px] rounded-md border border-input bg-background px-3 py-2 text-sm"
+                            >
+                              <option value="">Select item</option>
+                              {items.map((i) => (
+                                <option key={i.id} value={i.id}>{i.name}</option>
+                              ))}
+                            </select>
+                            {isDupe ? (
+                              <p className="mt-1 text-xs text-red-500">Duplicate item & unit</p>
+                            ) : null}
+                          </td>
+
+                          <td className="px-6 py-3 text-muted-foreground">
+                            {item?.category || "-"}
+                          </td>
+
+                          <td className="px-6 py-3">
+                            <select
+                              value={row.unitName}
+                              onChange={(e) => updateRow(row.rowKey, "unitName", e.target.value)}
+                              disabled={!row.itemId}
+                              className="w-full min-w-[140px] rounded-md border border-input bg-background px-3 py-2 text-sm disabled:cursor-not-allowed disabled:bg-muted"
+                            >
+                              {unitOptions.map((unit) => (
+                                <option key={unit} value={unit}>
+                                  {unit} {unit === item?.defaultUnit ? "(Default)" : "(Alternate)"}
+                                </option>
+                              ))}
+                            </select>
+                          </td>
+
+                          <td className="px-6 py-3 text-right">
+                            <input
+                              type="number"
+                              min="0"
+                              step="0.01"
+                              value={row.price}
+                              onChange={(event) => updateRow(row.rowKey, "price", event.target.value)}
+                              className="w-32 rounded-md border border-input bg-background px-3 py-2 text-right"
+                            />
+                          </td>
+
+                          <td className="px-6 py-3 text-right">
+                            <button
+                              type="button"
+                              onClick={() => removeRow(row.rowKey)}
+                              className="inline-flex items-center justify-center rounded-md p-2 text-muted-foreground hover:text-red-500"
+                              aria-label="Remove"
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>

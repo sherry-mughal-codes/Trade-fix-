@@ -31,13 +31,14 @@ import CheckoutSheet from "./checkout-sheet";
 import BatchPicker, { type ItemBatchRow } from "./batch-picker";
 import POSReportModal, { type POSReportKind } from "./pos-report-modal";
 import RefundDialog, { type RefundTargetInvoice } from "./refund-dialog";
-import { saveHoldOrderClient, getHoldOrdersListClient, hasPermissionClient } from "../_actions_client";
+import { saveHoldOrderClient, getHoldOrdersListClient, hasPermissionClient, lookupPosBarcodeClient } from "../_actions_client";
 
 interface POSItemShape {
   id: string;
   name: string;
   itemCode: string;
   unitName: string;
+  conversionFactor?: number;
   stockQty: number;
   unitPrice: number;
   trackBatches?: boolean | null;
@@ -149,7 +150,11 @@ export default function POSMain({ initialShift, initialCompanySettings }: POSMai
 
   const [clockNow, setClockNow] = useState<Date>(new Date());
 
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const scannerBufferRef = useRef<string>("");
+  const lastKeyTimeRef = useRef<number>(0);
+  const isScanningRef = useRef(false);
 
   useEffect(() => {
     const t = setInterval(() => setClockNow(new Date()), 1000);
@@ -248,16 +253,17 @@ export default function POSMain({ initialShift, initialCompanySettings }: POSMai
     discountTotal,
   ]);
 
-  function handleAddToCart(item: POSItemShape) {
+  const handleAddToCart = useCallback((item: POSItemShape) => {
     const needsBatch = Boolean(item.trackBatches);
     const needsExpiry = Boolean(item.hasExpiry);
-    const uid = `l-${item.id}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const uid = `l-${item.id}-${(item.unitName || "").replace(/\s+/g, "_")}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
     const newLine: CartLine = {
       uid,
       itemId: item.id,
       itemName: item.name,
       itemCode: item.itemCode,
       unitName: item.unitName,
+      conversionFactor: item.conversionFactor || 1,
       quantity: 1,
       unitPrice: item.unitPrice,
       discount: 0,
@@ -266,7 +272,14 @@ export default function POSMain({ initialShift, initialCompanySettings }: POSMai
       needsExpiryPick: needsExpiry,
     };
     setCartLines((prev) => {
-      const existing = prev.find((l) => l.itemId === item.id && !l.needsBatchPick && !l.needsExpiryPick && !l.batchNumber);
+      const existing = prev.find(
+        (l) =>
+          l.itemId === item.id &&
+          l.unitName === item.unitName &&
+          !l.needsBatchPick &&
+          !l.needsExpiryPick &&
+          !l.batchNumber
+      );
       if (existing && !needsBatch && !needsExpiry) {
         return prev.map((l) =>
           l.uid === existing.uid ? { ...l, quantity: l.quantity + 1 } : l
@@ -288,7 +301,102 @@ export default function POSMain({ initialShift, initialCompanySettings }: POSMai
         });
       }, 30);
     }
-  }
+  }, [shift.warehouseName]);
+
+  const handleBarcodeScan = useCallback(
+    async (scannedCode: string) => {
+      const trimmed = scannedCode.trim();
+      if (!trimmed) return;
+      if (isScanningRef.current) return;
+      isScanningRef.current = true;
+
+      try {
+        const result = await lookupPosBarcodeClient(trimmed, posProfileId, customer.id);
+        if (!result.ok || !result.item) {
+          toast.error(result.error || `Barcode "${trimmed}" not found.`);
+          return;
+        }
+
+        const resolved = result.item;
+        handleAddToCart({
+          id: resolved.id,
+          name: resolved.name,
+          itemCode: resolved.itemCode,
+          unitName: resolved.unitName,
+          conversionFactor: resolved.conversionFactor,
+          stockQty: resolved.stockQty,
+          unitPrice: resolved.unitPrice,
+          trackBatches: resolved.trackBatches,
+          hasExpiry: resolved.hasExpiry,
+        });
+
+        // Clear search input on successful scan
+        setSearchQuery("");
+        setDebouncedQuery("");
+        toast.success(`Added "${resolved.name}" (${resolved.unitName})`);
+      } catch (err: any) {
+        toast.error(err?.message || "Failed to process barcode");
+      } finally {
+        setTimeout(() => {
+          isScanningRef.current = false;
+        }, 120);
+      }
+    },
+    [posProfileId, customer.id, handleAddToCart]
+  );
+
+  // Autofocus search on mount and global barcode keyboard wedge scanner support
+  useEffect(() => {
+    searchInputRef.current?.focus();
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const isInput =
+        target &&
+        (target.tagName === "INPUT" ||
+          target.tagName === "TEXTAREA" ||
+          target.tagName === "SELECT");
+
+      // Shortcut to focus search/scanner input
+      if (e.key === "F2") {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+        return;
+      }
+
+      // If user is typing in another input (e.g. discount, customer, batch), do not intercept
+      if (isInput && target !== searchInputRef.current) {
+        return;
+      }
+
+      const now = Date.now();
+      const diff = now - lastKeyTimeRef.current;
+      lastKeyTimeRef.current = now;
+
+      if (e.key === "Enter") {
+        // If rapid keystrokes buffer has a barcode
+        if (scannerBufferRef.current.length >= 2) {
+          e.preventDefault();
+          const code = scannerBufferRef.current;
+          scannerBufferRef.current = "";
+          handleBarcodeScan(code);
+        }
+        return;
+      }
+
+      // Hardware scanners typically output characters faster than 50ms apart
+      if (diff > 60) {
+        scannerBufferRef.current = "";
+      }
+
+      if (e.key.length === 1) {
+        scannerBufferRef.current += e.key;
+      }
+    };
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [handleBarcodeScan]);
 
   function handleUpdateQty(uid: string, qty: number) {
     const next = Math.max(1, Math.round(qty || 1));
@@ -550,10 +658,19 @@ export default function POSMain({ initialShift, initialCompanySettings }: POSMai
           <div className="relative max-w-xl mx-auto">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
             <input
+              ref={searchInputRef}
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="Search items or scan barcode..."
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  if (searchQuery.trim()) {
+                    handleBarcodeScan(searchQuery.trim());
+                  }
+                }
+              }}
+              placeholder="Search items or scan barcode (F2)..."
               className="w-full pl-9 pr-3 py-2 rounded-lg border border-border bg-background text-sm focus:outline-none focus:ring-2 focus:ring-minia-primary/30 focus:border-minia-primary/40"
             />
           </div>
@@ -644,6 +761,7 @@ export default function POSMain({ initialShift, initialCompanySettings }: POSMai
               profileId={posProfileId}
               categoryId={categoryId}
               query={debouncedQuery}
+              customerId={customer?.id}
               onAddToCart={handleAddToCart}
             />
           </div>

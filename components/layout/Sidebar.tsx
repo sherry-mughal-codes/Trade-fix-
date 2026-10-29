@@ -28,7 +28,8 @@ import {
   Scroll,
   FileClock,
   Warehouse,
-  Settings2
+  Settings2,
+  Barcode
 } from "lucide-react";
 
 import { useState, useEffect, useRef } from "react";
@@ -114,6 +115,7 @@ const otherItems: SidebarItem[] = [
       { label: "Warehouses", href: "/masters/warehouses", icon: Building2 },
       { label: "Price Lists", href: "/masters/price-lists", icon: Tags },
       { label: "Items", href: "/items", icon: Boxes },
+      { label: "Barcode Printing", href: "/barcode-printing", icon: Barcode },
     ],
   },
 ];
@@ -179,7 +181,7 @@ export default function Sidebar({ onLinkClick, isMobile = false }: SidebarProps)
       setExpandedSections(prev => ({ ...prev, "Settings": false }));
     }
 
-    if (pathname?.startsWith("/masters") || pathname?.startsWith("/items")) {
+    if (pathname?.startsWith("/masters") || pathname?.startsWith("/items") || pathname?.startsWith("/barcode-printing")) {
       setExpandedSections(prev => ({ ...prev, "Master Data": true }));
     } else {
       setExpandedSections(prev => ({ ...prev, "Master Data": false }));
@@ -293,6 +295,8 @@ export default function Sidebar({ onLinkClick, isMobile = false }: SidebarProps)
         return has("settings.masters.manage") || has("settings.data.access");
       case "/items":
         return has("settings.masters.manage") || has("settings.data.access");
+      case "/barcode-printing":
+        return has("settings.barcode.print") || has("settings.masters.manage") || has("settings.data.access") || has("inventory.access") || has("pos.access");
       case "/data-settings":
         return has("settings.data.access");
       case "/hr/employees":

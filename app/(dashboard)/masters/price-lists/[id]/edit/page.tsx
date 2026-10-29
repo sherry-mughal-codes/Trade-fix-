@@ -19,6 +19,7 @@ export default async function EditPriceListPage({ params }: { params: { id: stri
         items: {
           select: {
             itemId: true,
+            unitName: true,
             price: true,
           },
         },
@@ -27,7 +28,19 @@ export default async function EditPriceListPage({ params }: { params: { id: stri
     prisma.item.findMany({
       where: { organizationId, isActive: true },
       orderBy: { name: "asc" },
-      select: { id: true, name: true, category: true, defaultUnit: true },
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        defaultUnit: true,
+        unitConversions: {
+          select: {
+            unitName: true,
+            conversionFactor: true,
+          },
+          orderBy: { unitName: "asc" },
+        },
+      },
     }),
     prisma.itemCategory.findMany({
       where: { organizationId, isActive: true },
@@ -42,6 +55,7 @@ export default async function EditPriceListPage({ params }: { params: { id: stri
     ...priceList,
     items: priceList.items.map((row) => ({
       itemId: row.itemId,
+      unitName: row.unitName,
       price: Number(row.price || 0),
     })),
   };
@@ -54,4 +68,3 @@ export default async function EditPriceListPage({ params }: { params: { id: stri
     />
   );
 }
-

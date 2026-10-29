@@ -7,6 +7,12 @@ import { requireItemMasterAccess } from "../../items/access";
 
 type PriceListType = "SELLING" | "BUYING";
 
+export type PriceListItemInput = {
+  itemId: string;
+  unitName: string;
+  price: number;
+};
+
 function normalizeType(value: FormDataEntryValue | null): PriceListType {
   return String(value || "").toUpperCase() === "BUYING" ? "BUYING" : "SELLING";
 }
@@ -16,7 +22,7 @@ function normalizeBoolean(value: FormDataEntryValue | null, fallback = false) {
   return String(value) === "true";
 }
 
-function parseItemsData(value: FormDataEntryValue | null) {
+function parseItemsData(value: FormDataEntryValue | null): PriceListItemInput[] {
   const raw = String(value || "");
   if (!raw) return [];
 
@@ -35,21 +41,26 @@ function parseItemsData(value: FormDataEntryValue | null) {
     .map((row) => {
       if (!row || typeof row !== "object") return null;
       const itemId = String((row as any).itemId || "").trim();
+      const unitName = String((row as any).unitName || "").trim();
       const price = Number((row as any).price || 0);
       if (!itemId) return null;
+      if (!unitName) {
+        throw new Error("Each price list item must have a unit specified.");
+      }
       if (!Number.isFinite(price) || price < 0) {
         throw new Error("Price must be a non-negative number.");
       }
-      return { itemId, price };
+      return { itemId, unitName, price };
     })
-    .filter(Boolean) as Array<{ itemId: string; price: number }>;
+    .filter(Boolean) as PriceListItemInput[];
 
   const seen = new Set<string>();
   for (const row of rows) {
-    if (seen.has(row.itemId)) {
-      throw new Error("Duplicate items are not allowed in the same price list.");
+    const key = `${row.itemId}:${row.unitName.toUpperCase()}`;
+    if (seen.has(key)) {
+      throw new Error(`Duplicate price for item and unit '${row.unitName}' is not allowed in the same price list.`);
     }
-    seen.add(row.itemId);
+    seen.add(key);
   }
 
   return rows;
@@ -63,7 +74,7 @@ async function savePriceList(formData: FormData, existingId?: string) {
   const type = normalizeType(formData.get("type"));
   const isActive = normalizeBoolean(formData.get("isActive"), true);
 
-  let items: Array<{ itemId: string; price: number }> = [];
+  let items: PriceListItemInput[] = [];
   try {
     items = parseItemsData(formData.get("itemsData"));
   } catch (error) {
@@ -102,15 +113,38 @@ async function savePriceList(formData: FormData, existingId?: string) {
     return { error: "Price list name must be unique." };
   }
 
-  const itemIds = items.map((row) => row.itemId);
+  const itemIds = Array.from(new Set(items.map((row) => row.itemId)));
   if (itemIds.length) {
-    const found = await prisma.item.count({
+    const foundItems = await prisma.item.findMany({
       where: withOrganization(organizationId, {
         id: { in: itemIds },
       }),
+      include: {
+        unitConversions: {
+          select: { unitName: true },
+        },
+      },
     });
-    if (found !== itemIds.length) {
-      return { error: "One or more items selected for the price list are invalid." };
+
+    if (foundItems.length !== itemIds.length) {
+      return { error: "One or more items selected for the price list are invalid or do not belong to this organization." };
+    }
+
+    const itemMap = new Map(foundItems.map((item) => [item.id, item]));
+    for (const row of items) {
+      const item = itemMap.get(row.itemId);
+      if (!item) {
+        return { error: "Invalid item selected." };
+      }
+      const validUnits = new Set([
+        item.defaultUnit.toUpperCase(),
+        ...item.unitConversions.map((u) => u.unitName.toUpperCase()),
+      ]);
+      if (!validUnits.has(row.unitName.toUpperCase())) {
+        return {
+          error: `Unit '${row.unitName}' is not valid for item '${item.name}'. Valid units are: ${[item.defaultUnit, ...item.unitConversions.map((u) => u.unitName)].join(", ")}.`,
+        };
+      }
     }
   }
 
@@ -143,6 +177,7 @@ async function savePriceList(formData: FormData, existingId?: string) {
               organizationId,
               priceListId: existingId,
               itemId: row.itemId,
+              unitName: row.unitName,
               price: row.price,
             })),
           });
@@ -167,6 +202,7 @@ async function savePriceList(formData: FormData, existingId?: string) {
               organizationId,
               priceListId: priceList.id,
               itemId: row.itemId,
+              unitName: row.unitName,
               price: row.price,
             })),
           });
@@ -244,11 +280,13 @@ export async function getPriceListPrices(priceListId: string) {
 
   const items = await prisma.priceListItem.findMany({
     where: withOrganization(organizationId, { priceListId }),
-    select: { itemId: true, price: true },
+    select: { itemId: true, unitName: true, price: true },
   });
 
   return items.reduce<Record<string, number>>((acc, row) => {
-    acc[row.itemId] = Number(row.price || 0);
+    const p = Number(row.price || 0);
+    acc[row.itemId] = p;
+    acc[`${row.itemId}:${row.unitName}`] = p;
     return acc;
   }, {});
 }

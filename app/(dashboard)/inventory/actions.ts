@@ -236,12 +236,14 @@ export async function createStockEntry(formData: FormData) {
 
       for (const line of validatedLines) {
         if (line.unitCost && line.unitCost > 0) {
+          const itemDefaultUnit = line.item?.defaultUnit || "Unit";
           for (const priceListId of targetBuyingListIds) {
             await tx.priceListItem.upsert({
               where: {
-                priceListId_itemId: {
+                priceListId_itemId_unitName: {
                   priceListId,
                   itemId: line.itemId,
+                  unitName: itemDefaultUnit,
                 },
               },
               update: {
@@ -251,6 +253,7 @@ export async function createStockEntry(formData: FormData) {
                 organizationId,
                 priceListId,
                 itemId: line.itemId,
+                unitName: itemDefaultUnit,
                 price: line.unitCost,
               },
             });

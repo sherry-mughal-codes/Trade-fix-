@@ -30,11 +30,11 @@ export default async function EditInvoicePage({ params }: { params: { id: string
     prisma.companySettings.findFirst({ where: { organizationId } }),
     prisma.priceListItem.findMany({
       where: { organizationId, priceListId: standardLists.selling.id },
-      select: { itemId: true, price: true },
+      select: { itemId: true, unitName: true, price: true },
     }),
     prisma.priceListItem.findMany({
       where: { organizationId, priceListId: standardLists.buying.id },
-      select: { itemId: true, price: true },
+      select: { itemId: true, unitName: true, price: true },
     }),
   ]);
 

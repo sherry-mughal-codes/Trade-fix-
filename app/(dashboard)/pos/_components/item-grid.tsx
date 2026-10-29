@@ -17,10 +17,11 @@ interface ItemGridProps {
   profileId: string;
   categoryId: string;
   query: string;
+  customerId?: string | null;
   onAddToCart: (item: POSItem) => void;
 }
 
-export default function ItemGrid({ profileId, categoryId, query, onAddToCart }: ItemGridProps) {
+export default function ItemGrid({ profileId, categoryId, query, customerId, onAddToCart }: ItemGridProps) {
   const [items, setItems] = useState<POSItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -28,7 +29,7 @@ export default function ItemGrid({ profileId, categoryId, query, onAddToCart }: 
     let active = true;
     setLoading(true);
     const catId = categoryId === "all" ? null : categoryId;
-    fetchPosItemsClient({ posProfileId: profileId, categoryId: catId, query })
+    fetchPosItemsClient({ posProfileId: profileId, categoryId: catId, query, customerId })
       .then((data) => {
         if (active) setItems(data as POSItem[]);
       })
@@ -37,7 +38,7 @@ export default function ItemGrid({ profileId, categoryId, query, onAddToCart }: 
     return () => {
       active = false;
     };
-  }, [profileId, categoryId, query]);
+  }, [profileId, categoryId, query, customerId]);
 
   const getStockBadge = (qty: number) => {
     if (qty >= 10) return "bg-green-600";

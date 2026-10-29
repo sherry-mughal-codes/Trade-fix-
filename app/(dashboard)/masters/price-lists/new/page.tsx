@@ -15,7 +15,19 @@ export default async function NewPriceListPage() {
     prisma.item.findMany({
       where: { organizationId, isActive: true },
       orderBy: { name: "asc" },
-      select: { id: true, name: true, category: true, defaultUnit: true },
+      select: {
+        id: true,
+        name: true,
+        category: true,
+        defaultUnit: true,
+        unitConversions: {
+          select: {
+            unitName: true,
+            conversionFactor: true,
+          },
+          orderBy: { unitName: "asc" },
+        },
+      },
     }),
     prisma.itemCategory.findMany({
       where: { organizationId, isActive: true },
@@ -26,4 +38,3 @@ export default async function NewPriceListPage() {
 
   return <PriceListForm items={items} categories={categories} />;
 }
-

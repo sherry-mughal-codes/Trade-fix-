@@ -19,11 +19,13 @@ export async function getInvoicePriceListPrices(priceListId: string) {
 
   const rows = await prisma.priceListItem.findMany({
     where: withOrganization(organizationId, { priceListId }),
-    select: { itemId: true, price: true },
+    select: { itemId: true, unitName: true, price: true },
   });
 
   return rows.reduce<Record<string, number>>((acc, row) => {
-    acc[row.itemId] = Number(row.price || 0);
+    const p = Number(row.price || 0);
+    acc[row.itemId] = p;
+    acc[`${row.itemId}:${row.unitName}`] = p;
     return acc;
   }, {});
 }

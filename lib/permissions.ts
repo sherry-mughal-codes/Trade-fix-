@@ -90,6 +90,7 @@ export const PERMISSIONS: PermissionDef[] = [
   { key: "settings.company.update", label: "Update company settings", group: "Settings", order: 20 },
   { key: "settings.data.access", label: "Access data settings", group: "Settings", order: 30 },
   { key: "settings.masters.manage", label: "Manage master data", group: "Settings", order: 35 },
+  { key: "settings.barcode.print", label: "Print item barcodes & stickers", group: "Settings", order: 36 },
   { key: "settings.rolesRights.manage", label: "Manage roles & rights", group: "Settings", order: 40 },
   { key: "settings.users.manage", label: "Manage users", group: "Settings", order: 50 },
   { key: "settings.organizations.manage", label: "Manage organizations", group: "Settings", order: 60 },
@@ -164,6 +165,7 @@ export const SYSTEM_ROLES: SystemRoleSeed[] = [
       "reports.receivableSummary",
       "settings.access",
       "settings.data.access",
+      "settings.barcode.print",
     ],
   },
   {
@@ -248,6 +250,7 @@ export const SYSTEM_ROLES: SystemRoleSeed[] = [
       "reports.receivableSummary",
       "settings.access",
       "settings.data.access",
+      "settings.barcode.print",
       "settings.masters.manage",
     ],
   },

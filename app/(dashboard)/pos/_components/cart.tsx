@@ -26,6 +26,7 @@ export interface CartLine {
   itemName: string;
   itemCode: string;
   unitName: string;
+  conversionFactor?: number;
   quantity: number;
   unitPrice: number;
   discount: number;
@@ -349,6 +350,12 @@ export default function Cart({
                   <td className="px-2.5 sm:px-3 py-2 align-top">
                     <div className="font-medium text-foreground text-[13px] leading-tight line-clamp-2">
                       {l.itemName}
+                    </div>
+                    <div className="mt-0.5 flex items-center gap-1">
+                      <span className="inline-flex items-center px-1.5 py-0.5 rounded bg-muted/80 text-[10px] font-medium text-foreground">
+                        {l.unitName}
+                        {l.conversionFactor && l.conversionFactor > 1 ? ` × ${l.conversionFactor}` : ""}
+                      </span>
                     </div>
                     {(l.batchNumber || l.expiryDate || l.needsBatchPick || l.needsExpiryPick) && (
                       <div className="mt-1 flex flex-wrap items-center gap-1">

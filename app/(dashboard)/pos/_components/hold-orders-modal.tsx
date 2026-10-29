@@ -16,6 +16,7 @@ export interface CartLine {
   itemName: string;
   itemCode: string;
   unitName: string;
+  conversionFactor?: number;
   quantity: number;
   unitPrice: number;
   discount: number;

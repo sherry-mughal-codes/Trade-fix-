@@ -20,12 +20,22 @@ import {
   posRefund,
   generatePOSReport,
   getPOSReportSnapshots,
+  lookupPosBarcode,
 } from "./actions";
+
+export async function lookupPosBarcodeClient(
+  rawBarcode: string,
+  posProfileId: string,
+  customerId?: string
+) {
+  return lookupPosBarcode(rawBarcode, posProfileId, customerId);
+}
 
 export async function fetchPosItemsClient(params: {
   posProfileId: string;
   categoryId?: string | null;
   query?: string;
+  customerId?: string | null;
 }) {
   return fetchPosItems(params);
 }

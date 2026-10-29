@@ -72,6 +72,7 @@ model Organization {
   posSavedOrders        PosSavedOrder[]
   posRefunds            POSRefund[]
   posReportSnapshots    POSReportSnapshot[]
+  barcodeLayouts        BarcodeLayout[]
   createdAt             DateTime                 @default(now())
   updatedAt             DateTime                 @updatedAt
 
@@ -531,14 +532,16 @@ model PriceListItem {
   priceList      PriceList    @relation(fields: [priceListId], references: [id], onDelete: Cascade)
   itemId         String
   item           Item         @relation(fields: [itemId], references: [id], onDelete: Cascade)
+  unitName       String       @default("Unit")
   price          Float        @default(0)
   createdAt      DateTime     @default(now())
   updatedAt      DateTime     @updatedAt
 
-  @@unique([priceListId, itemId])
+  @@unique([priceListId, itemId, unitName])
   @@index([organizationId])
   @@index([priceListId])
   @@index([itemId])
+  @@index([unitName])
 }
 
 model Party {
@@ -1070,4 +1073,46 @@ model POSReportSnapshot {
   @@index([posProfileId])
   @@index([posCounterId])
   @@index([userId])
+}
+
+
+model BarcodeLayout {
+  id              String       @id @default(uuid())
+  organizationId  String
+  organization    Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  name            String
+  isDefault       Boolean      @default(false)
+  paperType       String       @default("ROLL") // "ROLL" | "SHEET"
+  widthMm         Float        @default(50)
+  heightMm        Float        @default(25)
+  columnsCount    Int          @default(1)
+  rowsPerPage     Int          @default(1)
+  gapX            Float        @default(2)
+  gapY            Float        @default(2)
+  marginTop       Float        @default(2)
+  marginLeft      Float        @default(2)
+
+  showCompanyName Boolean      @default(true)
+  companyTitle    String?
+  showItemName    Boolean      @default(true)
+  showPrice       Boolean      @default(true)
+  showUnit        Boolean      @default(true)
+  showBarcodeText Boolean      @default(true)
+  showCategory    Boolean      @default(false)
+
+  barcodeFormat   String       @default("CODE128") // "CODE128" | "EAN13" | "QR"
+  barcodeHeight   Float        @default(10)
+  fontSize        Int          @default(10)
+  textAlign       String       @default("center") // "left" | "center" | "right"
+  currencySymbol  String       @default("Rs.")
+  printerName     String?
+  density         Int          @default(10)
+  speed           Int          @default(3)
+  sensorType      String       @default("GAP")
+
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@index([organizationId])
+  @@index([organizationId, isDefault])
 }

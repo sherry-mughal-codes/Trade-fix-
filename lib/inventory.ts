@@ -218,7 +218,11 @@ export async function syncInvoiceInventory(tx: InventoryTx, organizationId: stri
     include: {
       items: {
         include: {
-          item: true,
+          item: {
+            include: {
+              unitConversions: true,
+            },
+          },
         },
       },
     },
@@ -244,6 +248,22 @@ export async function syncInvoiceInventory(tx: InventoryTx, organizationId: stri
       throw new Error(`Quantity must be greater than zero for ${row.description}.`);
     }
 
+    const item = row.item;
+    let conversionFactor = 1;
+    const soldUnit = String(row.moreDetails || "").trim().toLowerCase();
+    const defaultUnit = String(item?.defaultUnit || "").trim().toLowerCase();
+
+    if (soldUnit && soldUnit !== defaultUnit && Array.isArray(item?.unitConversions)) {
+      const match = item.unitConversions.find(
+        (u: any) => String(u.unitName || "").trim().toLowerCase() === soldUnit
+      );
+      if (match && Number(match.conversionFactor) > 0) {
+        conversionFactor = Number(match.conversionFactor);
+      }
+    }
+
+    const canonicalQty = quantity * conversionFactor;
+
     if (invoice.type === "PURCHASE") {
       if (row.item.trackBatches && !String(row.batchNumber || "").trim()) {
         throw new Error(`Batch number is required for ${row.description}.`);
@@ -263,9 +283,9 @@ export async function syncInvoiceInventory(tx: InventoryTx, organizationId: stri
       sourceType: "INVOICE",
       sourceId: invoice.id,
       sourceNumber: invoice.invoiceNumber,
-      note: `${invoice.type === "PURCHASE" ? "Purchase" : "Sale"} invoice ${invoice.invoiceNumber}`,
-      quantity,
-      unitCost: invoice.type === "PURCHASE" ? normalizeNumber(row.amount) / quantity : 0,
+      note: `${invoice.type === "PURCHASE" ? "Purchase" : "Sale"} invoice ${invoice.invoiceNumber}${row.moreDetails ? ` (${row.quantity} ${row.moreDetails})` : ""}`,
+      quantity: canonicalQty,
+      unitCost: invoice.type === "PURCHASE" ? normalizeNumber(row.amount) / canonicalQty : 0,
       totalCost: 0,
       runningQty: 0,
       runningAverageCost: 0,
